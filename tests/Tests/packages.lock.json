@@ -193,11 +193,6 @@
           "System.Text.Json": "4.6.0"
         }
       },
-      "Elastic.Transport": {
-        "type": "Transitive",
-        "resolved": "0.4.14",
-        "contentHash": "VjfChM++MnfljqKnCN75h2huIlg7HkUgrc4VyLh8HMyMKPxaK9LrxbUH8xeDm7bIqEd/qSCeujatfwhfYEhD6w=="
-      },
       "EmptyFiles": {
         "type": "Transitive",
         "resolved": "2.8.0",
@@ -1478,7 +1473,7 @@
       "elastic.clients.elasticsearch": {
         "type": "Project",
         "dependencies": {
-          "Elastic.Transport": "[0.4.14, )"
+          "Elastic.Transport": "[1.0.0, )"
         }
       },
       "elastic.clients.elasticsearch.jsonnetserializer": {
@@ -1487,6 +1482,9 @@
           "Elastic.Clients.Elasticsearch": "[8.0.0, )",
           "Newtonsoft.Json": "[13.0.1, )"
         }
+      },
+      "elastic.transport": {
+        "type": "Project"
       },
       "tests.clusterlauncher": {
         "type": "Project",

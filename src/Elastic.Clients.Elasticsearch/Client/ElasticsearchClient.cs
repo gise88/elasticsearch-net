@@ -12,6 +12,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Elastic.Clients.Elasticsearch.Requests;
 using Elastic.Transport;
+using Elastic.Transport.Diagnostics;
 using Elastic.Transport.Products.Elasticsearch;
 
 namespace Elastic.Clients.Elasticsearch;
@@ -135,27 +136,27 @@ public partial class ElasticsearchClient
 			throw new UnsupportedProductException(UnsupportedProductException.InvalidProductError);
 
 		var (requestModified, hadRequestConfig, originalHeaders) = AttachProductCheckHeaderIfRequired<TRequest, TRequestParameters>(request);
-
-		var (resolvedUrl, urlTemplate, postData) = PrepareRequest<TRequest, TRequestParameters>(request, forceConfiguration);
+		var (resolvedUrl, urlTemplate, resolvedRouteValues, postData) = PrepareRequest<TRequest, TRequestParameters>(request, forceConfiguration);
+		var openTelemetryData = PrepareOpenTelemetryData<TRequest, TRequestParameters>(request, urlTemplate, resolvedRouteValues);
 
 		if (_productCheckStatus == ProductCheckStatus.Succeeded && !requestModified)
 		{
 			if (isAsync)
-				return new ValueTask<TResponse>(_transport.RequestAsync<TResponse>(request.HttpMethod, resolvedUrl, postData, request.RequestParameters, cancellationToken));
+				return new ValueTask<TResponse>(_transport.RequestAsync<TResponse>(request.HttpMethod, resolvedUrl, postData, request.RequestParameters, in openTelemetryData, cancellationToken));
 			else
-				return new ValueTask<TResponse>(_transport.Request<TResponse>(request.HttpMethod, resolvedUrl, postData, request.RequestParameters));
+				return new ValueTask<TResponse>(_transport.Request<TResponse>(request.HttpMethod, resolvedUrl, postData, request.RequestParameters, in openTelemetryData));
 		}
-		
-		return SendRequest(isAsync, request, request.RequestParameters, resolvedUrl, postData, hadRequestConfig, originalHeaders);
 
-		async ValueTask<TResponse> SendRequest(bool isAsync, TRequest request, RequestParameters? parameters, string url, PostData postData, bool hadRequestConfig, HeadersList? originalHeaders)
+		return SendRequest(isAsync);
+
+		async ValueTask<TResponse> SendRequest(bool isAsync)
 		{
 			TResponse response;
 
 			if (isAsync)
-				response = await _transport.RequestAsync<TResponse>(request.HttpMethod, url, postData, parameters, cancellationToken).ConfigureAwait(false);
+				response = await _transport.RequestAsync<TResponse>(request.HttpMethod, resolvedUrl, postData, request.RequestParameters, in openTelemetryData, cancellationToken).ConfigureAwait(false);
 			else
-				response = _transport.Request<TResponse>(request.HttpMethod, url, postData, parameters);
+				response = _transport.Request<TResponse>(request.HttpMethod, resolvedUrl, postData, request.RequestParameters, in openTelemetryData);
 
 			PostRequestProductCheck<TRequest, TResponse>(request, response);
 
@@ -176,6 +177,37 @@ public partial class ElasticsearchClient
 
 			return response;
 		}
+	}
+
+	private static OpenTelemetryData PrepareOpenTelemetryData<TRequest, TRequestParameters>(TRequest request, string urlTemplate, Dictionary<string, string> resolvedRouteValues)
+		where TRequest : Request<TRequestParameters>
+		where TRequestParameters : RequestParameters, new()
+	{
+		// If there are no subscribed listeners, we avoid some work and allocations
+		if (!OpenTelemetry.ElasticTransportActivitySourceHasListeners)
+			return default;
+
+		// We fall back to a general operation name in cases where the derived request fails to override the property
+		var operationName = !string.IsNullOrEmpty(request.OperationName) ? request.OperationName : "elasticsearch request";
+
+		var attributes = new Dictionary<string, object>
+		{
+			[OpenTelemetrySemanticConventions.DbSystem] = "elasticsearch",
+			[OpenTelemetrySemanticConventions.DbOperation] = !string.IsNullOrEmpty(request.OperationName) ? request.OperationName : "unknown",
+			[$"{OpenTelemetrySpanAttributePrefix}route.template"] = urlTemplate
+		};
+
+		if (resolvedRouteValues is not null)
+		{
+			foreach (var value in resolvedRouteValues)
+			{
+				if (!string.IsNullOrEmpty(value.Key) && !string.IsNullOrEmpty(value.Value))
+					attributes.Add($"{OpenTelemetrySpanAttributePrefix}path_parts.{value.Key}", value.Value);
+			}
+		}
+
+		var openTelemetryData = new OpenTelemetryData { SpanName = operationName, SpanAttributes = attributes };
+		return openTelemetryData;
 	}
 
 	private (bool requestModified, bool hadRequestConfig, HeadersList? originalHeaders) AttachProductCheckHeaderIfRequired<TRequest, TRequestParameters>(TRequest request)
@@ -214,7 +246,7 @@ public partial class ElasticsearchClient
 		return (requestModified, hadRequestConfig, originalHeaders);
 	}
 
-	private (string resolvedUrl, string urlTemplate, PostData data) PrepareRequest<TRequest, TRequestParameters>(TRequest request,
+	private (string resolvedUrl, string urlTemplate, Dictionary<string, string>? resolvedRouteValues, PostData data) PrepareRequest<TRequest, TRequestParameters>(TRequest request,
 		Action<IRequestConfiguration>? forceConfiguration)
 		where TRequest : Request<TRequestParameters>
 		where TRequestParameters : RequestParameters, new()
@@ -230,7 +262,7 @@ public partial class ElasticsearchClient
 		if (request.Accept is not null)
 			ForceAccept<TRequest, TRequestParameters>(request, request.Accept);
 
-		var (resolvedUrl, urlTemplate) = request.GetUrl(ElasticsearchClientSettings);
+		var (resolvedUrl, urlTemplate, routeValues) = request.GetUrl(ElasticsearchClientSettings);
 
 		var postData =
 			request.HttpMethod == HttpMethod.GET ||
@@ -238,21 +270,20 @@ public partial class ElasticsearchClient
 				? null
 				: PostData.Serializable(request);
 
-		return (resolvedUrl, urlTemplate, postData);
+		return (resolvedUrl, urlTemplate, routeValues, postData);
 	}
 
 	private void PostRequestProductCheck<TRequest, TResponse>(TRequest request, TResponse response)
 		where TRequest : Request
 		where TResponse : ElasticsearchResponse, new()
 	{
-		if (response.ApiCallDetails.HttpStatusCode.HasValue && response.ApiCallDetails.HttpStatusCode.Value >= 200 && response.ApiCallDetails.HttpStatusCode.Value <= 299 && _productCheckStatus == ProductCheckStatus.NotChecked)
+		if (response.ApiCallDetails.HttpStatusCode.HasValue && response.ApiCallDetails.HttpStatusCode.Value >= 200
+			&& response.ApiCallDetails.HttpStatusCode.Value <= 299
+			&& _productCheckStatus == ProductCheckStatus.NotChecked)
 		{
-			if (!response.ApiCallDetails.TryGetHeader("x-elastic-product", out var values) || !values.Single().Equals("Elasticsearch", StringComparison.Ordinal))
-			{
-				_productCheckStatus = ProductCheckStatus.Failed;
-			}
-
-			_productCheckStatus = ProductCheckStatus.Succeeded;
+			_productCheckStatus = !response.ApiCallDetails.TryGetHeader("x-elastic-product", out var values) || !values.Single().Equals("Elasticsearch", StringComparison.Ordinal)
+				? ProductCheckStatus.Failed
+				: ProductCheckStatus.Succeeded;
 		}
 	}
 
