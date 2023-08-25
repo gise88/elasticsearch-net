@@ -23,6 +23,8 @@ namespace Elastic.Clients.Elasticsearch;
 public partial class ElasticsearchClient
 {
 	private const string OpenTelemetrySpanAttributePrefix = "db.elasticsearch.";
+	// This should be updated if any of the code uses semantic conventions defined in newer schema versions.
+	private const string OpenTelemetrySchemaVersion = "https://opentelemetry.io/schemas/1.21.0";
 
 	private readonly HttpTransport<IElasticsearchClientSettings> _transport;
 	internal static ConditionalWeakTable<JsonSerializerOptions, IElasticsearchClientSettings> SettingsTable { get; } = new();
@@ -137,7 +139,7 @@ public partial class ElasticsearchClient
 
 		var (requestModified, hadRequestConfig, originalHeaders) = AttachProductCheckHeaderIfRequired<TRequest, TRequestParameters>(request);
 		var (resolvedUrl, urlTemplate, resolvedRouteValues, postData) = PrepareRequest<TRequest, TRequestParameters>(request, forceConfiguration);
-		var openTelemetryData = PrepareOpenTelemetryData<TRequest, TRequestParameters>(request, urlTemplate, resolvedRouteValues);
+		var openTelemetryData = PrepareOpenTelemetryData<TRequest, TRequestParameters>(request, resolvedRouteValues);
 
 		if (_productCheckStatus == ProductCheckStatus.Succeeded && !requestModified)
 		{
@@ -179,7 +181,7 @@ public partial class ElasticsearchClient
 		}
 	}
 
-	private static OpenTelemetryData PrepareOpenTelemetryData<TRequest, TRequestParameters>(TRequest request, string urlTemplate, Dictionary<string, string> resolvedRouteValues)
+	private static OpenTelemetryData PrepareOpenTelemetryData<TRequest, TRequestParameters>(TRequest request, Dictionary<string, string> resolvedRouteValues)
 		where TRequest : Request<TRequestParameters>
 		where TRequestParameters : RequestParameters, new()
 	{
@@ -188,13 +190,13 @@ public partial class ElasticsearchClient
 			return default;
 
 		// We fall back to a general operation name in cases where the derived request fails to override the property
-		var operationName = !string.IsNullOrEmpty(request.OperationName) ? request.OperationName : "elasticsearch request";
+		var operationName = !string.IsNullOrEmpty(request.OperationName) ? request.OperationName : request.HttpMethod.GetStringValue();
 
 		var attributes = new Dictionary<string, object>
 		{
-			[OpenTelemetrySemanticConventions.DbSystem] = "elasticsearch",
+			//[OpenTelemetrySemanticConventions.DbSystem] = "elasticsearch",
 			[OpenTelemetrySemanticConventions.DbOperation] = !string.IsNullOrEmpty(request.OperationName) ? request.OperationName : "unknown",
-			[$"{OpenTelemetrySpanAttributePrefix}route.template"] = urlTemplate
+			[$"{OpenTelemetrySpanAttributePrefix}schema_url"] = OpenTelemetrySchemaVersion
 		};
 
 		if (resolvedRouteValues is not null)
