@@ -6,6 +6,5 @@ namespace Elastic.Clients.Elasticsearch;
 
 internal static class OpenTelemetrySemanticConventions
 {
-	public const string DbSystem = "db.system";
 	public const string DbOperation = "db.operation";
 }
