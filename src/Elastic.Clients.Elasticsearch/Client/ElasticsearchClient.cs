@@ -194,7 +194,6 @@ public partial class ElasticsearchClient
 
 		var attributes = new Dictionary<string, object>
 		{
-			//[OpenTelemetrySemanticConventions.DbSystem] = "elasticsearch",
 			[OpenTelemetrySemanticConventions.DbOperation] = !string.IsNullOrEmpty(request.OperationName) ? request.OperationName : "unknown",
 			[$"{OpenTelemetrySpanAttributePrefix}schema_url"] = OpenTelemetrySchemaVersion
 		};
